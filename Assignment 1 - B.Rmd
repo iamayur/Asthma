@@ -1,0 +1,260 @@
+---
+title: "Data Science Assignment 1 Part B"
+author: "Mayur Kalpe"
+date: "2025-10-08"
+output: pdf_document
+---
+
+
+Explore the data
+```{r}
+envdata <- read.csv("EnvData.csv")
+attach(envdata)
+names(envdata)
+head(envdata)
+summary(envdata$asthma)
+
+# Lets convert the required variables into factor variables which are not already. 
+envdata$asthma <- factor(envdata$asthma, levels = c(0,1), labels = c("No", "Yes"))
+envdata$gender <- factor(envdata$gender)
+envdata$triage <- factor(envdata$triage)
+
+```
+
+
+```{r}
+# To fix the o3 
+
+
+
+## 0) Start clean (optional but helpful if the object is already mangled)
+rm(envdata)
+
+## 1) Re-read the CSV; don't guess factors; normalize common NA tokens
+envdata <- read.csv("EnvData.csv",
+                    stringsAsFactors = FALSE,
+                    na.strings = c("NA", "", " ", "NaN"))
+
+## 2) Ensure 'asthma' is a proper factor with No/Yes
+if (is.numeric(envdata$asthma) || is.integer(envdata$asthma)) {
+  envdata$asthma <- factor(envdata$asthma, levels = c(0,1), labels = c("No","Yes"))
+} else {
+  ## handles "0"/"1"/"No"/"Yes" strings robustly
+  tmp <- trimws(tolower(as.character(envdata$asthma)))
+  envdata$asthma <- factor(ifelse(tmp %in% c("1","yes"), "Yes", "No"), levels = c("No","Yes"))
+}
+table(envdata$asthma)
+
+## 3) Force pollutant columns to numeric safely (trim whitespace first)
+to_num <- function(x) suppressWarnings(as.numeric(trimws(as.character(x))))
+cols <- c("co","o3","no2","so2","ppm10","visibility_reduction","aqi",
+          "precipitation","relativehumidity","vapourpressure",
+          "windspeed","winddirection","maxwindspeed")
+present <- intersect(cols, names(envdata))
+envdata[present] <- lapply(envdata[present], to_num)
+
+## 4) Sanity checks
+str(envdata$o3)
+summary(envdata$o3)              # should now show real stats, not all NA
+stopifnot(sum(!is.na(envdata$o3)) > 0)
+
+## 5) Plot (drop NA rows only for plotting)
+boxplot(o3 ~ asthma,
+        data = subset(envdata, !is.na(o3) & asthma %in% c("No","Yes")),
+        ylab = "Ozone (ppb)", xlab = "Asthma")
+
+```
+
+```{r}
+# to fix the age variable issue
+
+
+
+# ---- SIMPLE FIX: make age numeric (handles "40-44" or "40 to 44") ----
+x <- trimws(as.character(envdata$age))
+
+# try direct numeric first
+age_num <- suppressWarnings(as.numeric(x))
+
+# for ranges, use the midpoint of the two numbers found
+need_mid <- is.na(age_num)
+if (any(need_mid)) {
+  mid <- function(s) {
+    nums <- as.numeric(unlist(regmatches(s, gregexpr("\\d+", s))))
+    if (length(nums) >= 2) mean(nums[1:2]) else nums[1]
+  }
+  age_num[need_mid] <- sapply(x[need_mid], mid)
+}
+
+envdata$age <- age_num   # <-- now numeric
+# (optional) remove any leftover NAs before modelling
+# envdata <- subset(envdata, !is.na(age))
+
+# Refit your models and rerun cv.glm / predictions
+
+```
+
+
+
+
+```{r}
+# Visualising some relevant variables
+par(mfrow = c(1,2))
+boxplot(o3 ~ asthma, data = envdata, ylab="Ozone", xlab="Asthma")
+boxplot(no2 ~ asthma, data = envdata, ylab="NO2", xlab="Asthma")
+boxplot(relativehumidity ~ asthma, data = envdata, ylab="RH", xlab="Asthma")
+
+boxplot(so2 ~ asthma, data = envdata, ylab="So2", xlab="Asthma")
+
+boxplot(visibility_reduction ~ asthma, data = envdata, ylab="Visibility Reduction", xlab="Asthma")
+
+
+
+```
+
+
+**Q1**
+
+*Build a logistic regression model incorporating polynomial terms. Clearly outline and explain each step of the process involved.*
+```{r}
+#lets create a baseline logistic model (without poly)
+fit_base <- glm(asthma ~ age + gender + o3 + no2 + +relativehumidity, data = envdata, family = binomial)
+
+summary (fit_base)
+AIC(fit_base) # will compare later with the poly models. Lower the better
+```
+```{r}
+# Now lets try adding the polynomial terms first in 0zone (o3)
+fit_o3 <- glm(asthma ~ age +gender+relativehumidity+no2 + poly(o3, 2, raw = TRUE), data = envdata, family = binomial)
+
+#Now the poly model with NO2 only
+
+fit_no2 <- glm(asthma ~ age +gender+relativehumidity + o3 + poly(no2, 2, raw = TRUE), data = envdata, family = binomial)
+
+#The next model will consist on both o3 and no2
+fit_both <- glm(asthma ~ age +gender+relativehumidity + poly(o3,2,raw = TRUE) + poly(no2, 2, raw = TRUE), data = envdata, family = binomial)
+
+#Model comparison
+AIC(fit_base, fit_o3, fit_no2, fit_both)
+library(boot)
+set.seed(4)
+fit_all <- list (fit_base=fit_base, fit_o3=fit_o3, fit_no2=fit_no2, fit_both=fit_both)
+loocv <- sapply(fit_all, function(f) cv.glm(envdata,f)$delta[1])
+k10 <- sapply (fit_all, function(f) cv.glm (envdata, f, K=10)$delta[1])
+loocv
+k10
+
+```
+# As per the k10 method, fit_o3 model has the lowest value 0.219. Hence:-
+
+```{r}
+fit_final <- fit_o3
+summary(fit_final)
+```
+*The answer to the question 1 has been concluded above. The models  incorporating polynomial terms has been built above with all the steps involved. *
+
+
+
+**Question 2**
+
+
+*Give the resultant accepted model (i.e. write the model equation) based on your findings above. Justify your answer clearly. *
+
+
+The Accepted model in the logistic regression model with the polynomial term is the one with *quadratic term with o3*. It also includes age, gender, relative humidity and no2 as other base factors. The reason to select  that model was-  As per the k10 method, fit_o3 model has the lowest value 0.219 amongst others which was more than 2.22
+
+The resultant model is written as below:
+
+fit_final = glm(asthma ~ age +gender+relativehumidity+no2 + poly(o3, 2, raw = TRUE), data = envdata, family = binomial)
+
+
+or it can be also written as :-
+
+
+logit P (asthma = yes) = ß0 + £ ß(age_group) + ß Male + B relativehumidity + ß no2 + ßo3^2
+
+(Where all the ß values can be found in summary (fit_final) coefficients)
+
+
+**Q3**
+*3.	Use decision tree model to answer the research question. Clearly outline and explain each step of the process involved*
+Research question:
+
+Does the environmental factors are responsible for people getting asthma attacks?
+```{r}
+#install package tree for the decision tree
+install.packages("tree")
+```
+
+```{r}
+library(tree)
+dt1 <- tree(asthma~., data = envdata)
+plot(dt1)
+text(dt1, pretty = 0)
+
+
+```
+
+On the top of the tree, o3 is located in our decision tree. which makes it most important factor affecting the environment for the asthma disease. 
+
+```{r}
+summary (dt1)
+```
+```{r}
+#Divide the data into training and testing 50-50 split.
+set.seed(4)
+trainId = sample (1:nrow(envdata),nrow(envdata)*0.5)
+
+#Build DT for the training dataset
+dt2 <- tree(asthma~., data = envdata, subset = trainId)
+plot (dt2)
+
+text (dt2, pretty = 0)
+ 
+##################################################################################
+
+#################################################################################
+
+#model acccuracy for test dataset
+observed1 <- envdata[-trainId,]$asthma
+pred1 <-  predict(dt2, envdata[-trainId], type = "class")
+table(observed1,pred1)
+```
+We just got the error for variables age, it has to be comverted to character for this operation.
+```{r}
+dt_cv1 <- cv.tree(dt2, FUN = prune.misclass)
+dt_cv1
+#cv plot
+set.seed(4)
+plot(dt_cv1$size, dt_cv1$dev, type = "b", col = "red", xlab = "Tree size",
+     ylab = "Deviance")
+#The best tree size is 3
+pruned_dt1 <- prune.misclass(dt2, best = 8)
+pruned_dt1
+text(pruned_dt1, pretty = 0)
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
